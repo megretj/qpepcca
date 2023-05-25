@@ -1,6 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import math
+import scipy
 
 class CCA_CUBIC_MarkovChain_OG:
     def __init__(self, N=400, C = 1000, trans_err = 0.01, alpha = 1, beta = 0.5, RTT = 0.025, bit_err = 0.05):
@@ -120,6 +121,7 @@ class CCA_CUBIC_MarkovChain_new:
     
     def compute_stationnary_distribution(self):
         # 1. Compute the transition probability Matrix P
+        # TODO: This implementation seems to introduce some mistakes, sums up to something higher than zero
         self.P = np.zeros([self.N,self.N])
         for i in range(self.N):
             for j in range(self.N):
@@ -132,9 +134,15 @@ class CCA_CUBIC_MarkovChain_new:
         # piP = pi <=> pi(P-I)=0 <=> (P-I)^T pi = 0 
         # so pi is a left eigenvector of P, with eigenvalue 1
         # Furthermore, pis L1 norm needs to be equal to 1 
-        w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+        # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+
         #TODO: Pick the correct eigenvector, the that is equal to one (not the one with index zero by default)
-        self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+        # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+
+        ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+        self.pi = np.real(vs/vs.sum())
+        print(ws)
+        print(self.P)
         return 
     
     def compute_tau_and_S(self):
