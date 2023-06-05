@@ -335,11 +335,13 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
     def avg_throughput(self):
         self.compute_stationnary_distribution()
         self.compute_times()
-
+        num = 0
+        denom = 0
         self.ssThroughput = 0
         for i in range(self.N):
             for j in range(self.N):
                 if self.tau[i,j]>0:
-                    self.ssThroughput+= self.N_avg[i,j]*self.pi[i]*self.P[i,j]*1/self.tau[i,j]
-        self.ssThroughput=self.ssThroughput*self.RTT_real/self.W
+                    num+= self.N_avg[i,j]*self.pi[i]*self.P[i,j]*self.tau[i,j]
+                    denom += self.pi[i]*self.P[i,j]*self.tau[i,j]
+        self.ssThroughput=num/denom
         return self.ssThroughput
