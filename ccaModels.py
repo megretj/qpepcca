@@ -341,7 +341,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         for i in range(self.N):
             for j in range(self.N):
                 if self.tau[i,j]>0:
-                    num+= self.N_avg[i,j]*self.pi[i]*self.P[i,j]*self.tau[i,j]
+                    num+= (self.beta * self.a[i]+self.a[j])/2*self.pi[i]*self.P[i,j]*self.tau[i,j]
                     denom += self.pi[i]*self.P[i,j]*self.tau[i,j]
-        self.ssThroughput=num/denom
+        self.ssThroughput=num/denom/self.W
         return self.ssThroughput
