@@ -56,7 +56,6 @@ class CCA_MarkovChain_CUBIC(CCA_MarkovChain):
     
     def compute_stationnary_distribution(self):
         # 1. Compute the transition probability Matrix P
-        self.P = np.zeros([self.N,self.N])
         for i in range(self.N):
             for j in range(self.N):
                 if j == self.N:
@@ -102,8 +101,8 @@ class CCA_MarkovChain_CUBIC_OG(CCA_MarkovChain_CUBIC):
         self.compute_tau_and_S()
         numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.x = 1/self.W*numerator/denominator
-        return self.x
+        self.ssThroughput = 1/self.W*numerator/denominator
+        return self.ssThroughput
     
 class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
     def __init__(self, distribution = "bernoulli", *args, **kwargs):
@@ -230,7 +229,7 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
 class CCA_MarkovChain_Hybla_OG(CCA_MarkovChain_Hybla):
     
     def transition_proba_Hybla(self,i,j):
-        l = self.trans_err
+        l = self.err_rate
         if j < self.beta*(i-0.5):
             return 0
         if j == self.N:
@@ -280,6 +279,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         self.distribution = distribution
         self.Dmin = np.zeros([self.N,self.N])
         self.Dmax = np.zeros([self.N,self.N])
+        self.Ptilde = np.zeros((self.N,self.N))
         self.N_avg = np.zeros((self.N,self.N)) #shifted version of D_avg so that i corresponds to the starting value before the window reduction
         self.compute_distances()
     
@@ -287,7 +287,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         """Computes the number of packets required to transition from any state a_i to any state a_j.
 
         """
-        for i in range(int(np.ceil(self.N/self.beta))):
+        for i in range(self.N):
             for j in range(i,self.N):
                 if j == i:
                     self.Dmin[i,j] = 1
@@ -300,15 +300,31 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
             self.N_avg[i,:] = D_avg[max(int((i+1)*self.beta)-1,0),:]
         return
 
-    def transition_proba_Hybla(self,i, j):
-        if j<=int(self.beta*i):
+    def transition_proba_tilde_Hybla(self,i, j):
+        if j<=i:
             return 0
-        nmin = self.Dmin[int(self.beta*i),j]
-        nmax = self.Dmax[int(self.beta*i),j]
+        nmin = self.Dmin[i,j]
+        nmax = self.Dmax[i,j]
         #print(f"From {self.a[int(self.beta*i)]} to [{(j-1)*self.W/self.N},{j*self.W/self.N}]")
         #print(nmin,nmax)
-        self.P[i,j]=(1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax)
-        return self.P[i,j]
+        return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
+    
+    def compute_stationnary_distribution(self):
+        # 1. Compute the transition probability Matrix P
+        # First the shifted version
+        for i in range(self.N): # Actually would only need to compute up to (N-1)beta
+            for j in range(self.N):
+                if j == self.N-1:
+                    self.Ptilde[i,j] = 1-np.sum(self.Ptilde[i,:-1])
+                    continue
+                self.Ptilde[i,j] = self.transition_proba_tilde_Hybla(i,j)
+        # Then recover P from Ptilde
+        for i in range(self.N):
+            self.P[i,:] = self.Ptilde[int(i*self.beta),:]
+        # 2. Solve the system of equation (16)&(17)
+        ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+        self.pi = np.real(vs/vs.sum())[:,0]
+        return 
 
     def D(self,a,b) -> int:
         """ Upper bound on the number of packets sent between a and b
