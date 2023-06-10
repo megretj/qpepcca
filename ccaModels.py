@@ -4,10 +4,10 @@ import math
 import scipy
 
 class CCA_MarkovChain:
-    def __init__(self, N:int = 400, C:float=1000., RTT_real:float=0.025, RTT_est:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.5):
+    def __init__(self, N:int = 400, C:float=1000., RTT_real:float=0.025, RTT_est:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.5, W=50):
         self.N = N # number of states
         self.C = C # Bandwidth
-        self.W = C*RTT_real # in Mbyte, W = C*RTT where C is the maximum bandwidth
+        self.W = W #C*RTT_real # in Mbyte, where C is the maximum bandwidth
         self.RTT_real = RTT_real
         self.RTT_est = RTT_est # in ms
         self.packet_err = packet_err # probability that a packet drops 
@@ -110,8 +110,9 @@ class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
         self.distribution = distribution
         self.Dmin = np.zeros([self.N,self.N])
         self.Dmax = np.zeros([self.N,self.N])
+        self.Ptilde = np.zeros((self.N,self.N))
         self.compute_distances()
-
+    
     def compute_distances(self):
         for i in range(int(np.ceil(self.N/self.beta))):
             for j in range(i,self.N):
@@ -123,7 +124,7 @@ class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
         return
 
     def D(self,x,y) -> int:
-        """Number of segments sent within the transition from x (before reduction) to y (upper bounded since we assume cwnd packets are sent every RTT )
+        """Number of segments sent within the transition from x (after reduction) to y (upper bounded since we assume cwnd packets are sent every RTT )
 
         Args:
             x (_type_): start congestion window size
@@ -132,7 +133,7 @@ class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
         Returns:
             int: number of segments 
         """
-        T = self.T(x,y)/self.RTT_real
+        T = self.T(x*self.beta,y)/self.RTT_real
         l = int(np.floor(T))
         delta = T - l
         sum = 0
@@ -140,41 +141,36 @@ class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
             sum += self.w(x,k*self.RTT_real)
         return int(np.floor(sum+delta*self.w(x,l*self.RTT_real)))
 
-    def transition_proba_CUBIC(self,i,j):
-        """Probability to transition from state i to j
-
-        Args:
-            i (_type_): initial state
-            j (_type_): _description_
-
-        Returns:
-            _type_: _description_
-        """
-        if j < self.beta*(i-0.5):
+    def transition_proba_tilde_CUBIC(self,i, j):
+        if j<i:
             return 0
-        if j == self.N:
-            sum = 0
-            for jp in np.linspace(1,self.N-1,self.N-1):
-                if jp >= self.beta*(i-0.5):
-                    sum += self.transition_proba_CUBIC(i,jp)
-            return 1-sum
+        nmin = self.Dmin[i,j]
+        nmax = self.Dmax[i,j]
+        #print(f"From {self.a[int(self.beta*i)]} to [{(j-1)*self.W/self.N},{j*self.W/self.N}]")
+        #print(nmin,nmax)
+        if j == self.N -1:
+            return (1-self.packet_err)**(nmin-1)
 
-        nij_min = self.Dmin[i,j]
-        nij_max = self.Dmax[i,j]
-        #print(f"a_i = {self.a[i-1]}, a_j = {self.a[j-1]} in ({(j-1)*self.W/self.N},{j*self.W/self.N}), n_min ={nij_min}, n_max={nij_max}")
-        if self.distr == "bernoulli":
-            return (1-self.epsilon)**(nij_min-1)*(1-self.epsilon)**(nij_max)
-        else:
-            s = 0
-            for k in range(nij_min,nij_max+1):
-                s+= (1/self.epsilon)**k/math.factorial(k)
-
-            return np.exp(-1/self.epsilon)*s
+        return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
     
+    def compute_stationnary_distribution(self):
+        # 1. Compute the transition probability Matrix P
+        # First the shifted version
+        for i in range(self.N): # Actually would only need to compute up to (N-1)beta
+            for j in range(self.N):
+                self.Ptilde[i,j] = self.transition_proba_tilde_CUBIC(i,j)
+        # Then recover P from Ptilde
+        for i in range(self.N):
+            self.P[i,:] = self.Ptilde[int(i*self.beta),:]
+        # 2. Solve the system of equation (16)&(17)
+        ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+        self.pi = np.real(vs/vs.sum())[:,0]
+        return 
+
     def compute_tau_and_S(self):
         for i in range(self.N):
             for j in range(self.N):
-                self.tau[i,j] = np.maximum(self.T(self.a[i],(j-0.5)*self.W/self.N),0) # average time duration for state transistion from state i to j
+                self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transistion from state i to j
                 L = np.cbrt((1-self.beta)*self.a[i-1]/self.alpha)
                 self.S[i,j] = self.a[i]*self.tau[i,j] + self.alpha/4*((self.tau[i,j]-L)**4-L**4)
         return
@@ -301,10 +297,14 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         return
 
     def transition_proba_tilde_Hybla(self,i, j):
-        if j<=i:
+        if j<i:
             return 0
         nmin = self.Dmin[i,j]
         nmax = self.Dmax[i,j]
+
+        if j == self.N -1:
+            return (1-self.packet_err)**(nmin-1)
+        
         #print(f"From {self.a[int(self.beta*i)]} to [{(j-1)*self.W/self.N},{j*self.W/self.N}]")
         #print(nmin,nmax)
         return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
@@ -314,9 +314,9 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         # First the shifted version
         for i in range(self.N): # Actually would only need to compute up to (N-1)beta
             for j in range(self.N):
-                if j == self.N-1:
-                    self.Ptilde[i,j] = 1-np.sum(self.Ptilde[i,:-1])
-                    continue
+                #if j == self.N-1:
+                #    self.Ptilde[i,j] = 1-np.sum(self.Ptilde[i,:-1])
+                #    continue
                 self.Ptilde[i,j] = self.transition_proba_tilde_Hybla(i,j)
         # Then recover P from Ptilde
         for i in range(self.N):
@@ -361,3 +361,18 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
                     denom += self.pi[i]*self.P[i,j]*self.tau[i,j]
         self.ssThroughput=num/denom/self.W
         return self.ssThroughput
+    
+#####--------------------STOCHASTIC MODEL START-------------------------------#####
+
+class CCA_StochasticModel_Hybla():
+    def __init__(self, RTT,p,b,C,T0) -> None:
+        self.RTT = RTT
+        self.p = p
+        self.b = b # for hybla, b = 1/rho
+        self.C = C
+        self.Wmax = C*RTT
+        self.T0 = T0
+
+    def ssThroughput(self):
+        denominator = self.RTT*np.sqrt(2*self.b*self.p/3)+self.T0*min(1,3*np.sqrt(2*self.b*self.p/8))*self.p*(1+32*self.p*self.p)
+        return min(self.Wmax/self.RTT,1/denominator)
