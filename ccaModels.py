@@ -7,7 +7,7 @@ class CCA_MarkovChain:
     def __init__(self, N:int = 400, C:float=1000., RTT_real:float=0.025, RTT_est:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.5, W=50):
         self.N = N # number of states
         self.C = C # Bandwidth
-        self.W = W #C*RTT_real # in Mbyte, where C is the maximum bandwidth
+        self.W = C*RTT_real # in Mbyte, where C is the maximum bandwidth
         self.RTT_real = RTT_real
         self.RTT_est = RTT_est # in ms
         self.packet_err = packet_err # probability that a packet drops 
@@ -181,8 +181,9 @@ class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
         self.compute_tau_and_S()
         numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.x = 1/self.W*numerator/denominator
-        return self.x
+        self.ssThroughput = 1/self.W*numerator/denominator
+        #self.ssThroughput= numerator/denominator
+        return self.ssThroughput
 
 ######------------------------- CUBIC END -----------------------------######
 ######------------------------- HYBLA START ---------------------------######
@@ -191,7 +192,7 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
     def __init__(self, RTT0 = 0.025, *args,**kwargs):
         super(CCA_MarkovChain_Hybla,self).__init__(*args,**kwargs)
         self.RTT0 = RTT0 # target RTT
-        self.rho = max(self.RTT_est/RTT0,1)
+        self.rho = max(self.RTT_real/RTT0,1)
     
     def T(self,x,y):
         """Growth time
@@ -289,7 +290,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
                     self.Dmin[i,j] = 1
                 else:
                     self.Dmin[i,j] = self.Dmax[i,j-1]+1
-                self.Dmax[i,j] = self.D(self.a[i],(j+1)*self.W/self.N)
+                self.Dmax[i,j] = max(self.D(self.a[i],(j+1)*self.W/self.N),1)
 
         D_avg = (self.Dmin+self.Dmax)/2 
         for i in range(self.N):
@@ -297,7 +298,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         return
 
     def transition_proba_tilde_Hybla(self,i, j):
-        if j<i:
+        if j<i or self.Dmin[i,j]>self.Dmax[i,j]:
             return 0
         nmin = self.Dmin[i,j]
         nmax = self.Dmax[i,j]
@@ -327,7 +328,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         return 
 
     def D(self,a,b) -> int:
-        """ Upper bound on the number of packets sent between a and b
+        """ Number of packets sent between a and b
 
         Args:
             a (_type_): initial window size (after the window size reduction)
