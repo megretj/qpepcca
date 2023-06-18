@@ -2,9 +2,10 @@ import numpy as np
 import matplotlib.pyplot as plt
 import math
 import scipy
+import logging, sys
 
 class CCA_MarkovChain:
-    def __init__(self, N:int = 400, C:float=1000., RTT_real:float=0.025, RTT_est:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.5, W=50):
+    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, RTT_est:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7):
         self.N = N # number of states
         self.C = C # Bandwidth
         self.W = C*RTT_real # in Mbyte, where C is the maximum bandwidth
@@ -26,6 +27,9 @@ class CCA_MarkovChain_CUBIC(CCA_MarkovChain):
     def __init__(self,alpha = 1,*args,**kwargs):
         super(CCA_MarkovChain_CUBIC,self).__init__(*args,**kwargs)
         self.alpha = alpha # window growth rate
+
+    def __str__(self):
+        return "CUBIC"
     
     def T(self,x,y):
         """Growth time
@@ -67,11 +71,12 @@ class CCA_MarkovChain_CUBIC(CCA_MarkovChain):
         # piP = pi <=> pi(P-I)=0 <=> (P-I)^T pi = 0 
         # so pi is a left eigenvector of P, with eigenvalue 1
         # Furthermore, pis L1 norm needs to be equal to 1 
-        # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-        # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-        ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
-        self.pi = np.real(vs/vs.sum())[:,0]
+        w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+        self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+        # ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+        # self.pi = np.real(vs/vs.sum())[:,0]
         return self.pi
+    
 
     
 class CCA_MarkovChain_CUBIC_OG(CCA_MarkovChain_CUBIC):
@@ -101,13 +106,12 @@ class CCA_MarkovChain_CUBIC_OG(CCA_MarkovChain_CUBIC):
         self.compute_tau_and_S()
         numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.ssThroughput = 1/self.W*numerator/denominator
+        self.ssThroughput = numerator/denominator/self.RTT_real
         return self.ssThroughput
     
-class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
-    def __init__(self, distribution = "bernoulli", *args, **kwargs):
-        super(CCA_MarkovChain_CUBIC_new,self).__init__(*args,**kwargs)
-        self.distribution = distribution
+class CCA_MarkovChain_CUBIC_discrete(CCA_MarkovChain_CUBIC):
+    def __init__(self, *args, **kwargs):
+        super(CCA_MarkovChain_CUBIC_discrete,self).__init__(*args,**kwargs)
         self.Dmin = np.zeros([self.N,self.N])
         self.Dmax = np.zeros([self.N,self.N])
         self.Ptilde = np.zeros((self.N,self.N))
@@ -176,12 +180,11 @@ class CCA_MarkovChain_CUBIC_new(CCA_MarkovChain_CUBIC):
         return
     
     def avg_throughput(self):
-        # TODO: re-do the derivation from the paper and see if you need S, tau, and how should you compute them
         self.compute_stationnary_distribution()
         self.compute_tau_and_S()
         numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.ssThroughput = 1/self.W*numerator/denominator
+        self.ssThroughput = numerator/denominator*1/self.RTT_real
         #self.ssThroughput= numerator/denominator
         return self.ssThroughput
 
@@ -193,6 +196,9 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
         super(CCA_MarkovChain_Hybla,self).__init__(*args,**kwargs)
         self.RTT0 = RTT0 # target RTT
         self.rho = max(self.RTT_real/RTT0,1)
+
+    def __str__(self):
+        return "HYBLA"
     
     def T(self,x,y):
         """Growth time
@@ -249,7 +255,7 @@ class CCA_MarkovChain_Hybla_OG(CCA_MarkovChain_Hybla):
         self.compute_tau_and_S()
         numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.ssThroughput = 1/self.C*numerator/denominator
+        self.ssThroughput = 1/self.RTT_real*numerator/denominator
         return self.ssThroughput
 
 class CCA_MarkovChain_Hybla_ssd(CCA_MarkovChain_Hybla_OG):
@@ -360,20 +366,43 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
                 if self.tau[i,j]>0:
                     num+= (self.beta * self.a[i]+self.a[j])/2*self.pi[i]*self.P[i,j]*self.tau[i,j]
                     denom += self.pi[i]*self.P[i,j]*self.tau[i,j]
-        self.ssThroughput=num/denom/self.W
+        self.ssThroughput=num/denom/self.RTT_real
         return self.ssThroughput
     
-#####--------------------STOCHASTIC MODEL START-------------------------------#####
+#####--------------------COMPOUND MODEL START-------------------------------#####
 
-class CCA_StochasticModel_Hybla():
-    def __init__(self, RTT,p,b,C,T0) -> None:
-        self.RTT = RTT
-        self.p = p
-        self.b = b # for hybla, b = 1/rho
-        self.C = C
-        self.Wmax = C*RTT
-        self.T0 = T0
+class ISP_Compound():
+    def __init__(self, goodputRatio = 1, **segments):
+        self.segments = segments
+        self.goodputRatio = goodputRatio
+        self.min_throughput = -1
+        self.bottleNeck = ""
+        
+    def __str__(self):
+        map = "Client X"
+        for segmentName, segmentObject in self.segments.items():
+            map += "-----"+segmentName+": "+ segmentObject.__str__() + "-----X"
+        map += " Server"
+        return map
 
-    def ssThroughput(self):
-        denominator = self.RTT*np.sqrt(2*self.b*self.p/3)+self.T0*min(1,3*np.sqrt(2*self.b*self.p/8))*self.p*(1+32*self.p*self.p)
-        return min(self.Wmax/self.RTT,1/denominator)
+    def compute_throughput(self):
+        for segmentName, segmentObject in self.segments.items():
+            segmentObject.avg_throughput()
+            logging.debug(f"{segmentName} has an average throughput of {segmentObject.ssThroughput}")
+            if (segmentObject.ssThroughput < self.min_throughput) or (self.min_throughput==-1):
+                self.min_throughput = segmentObject.ssThroughput
+                self.bottleNeck = segmentName
+        return self.min_throughput
+    
+    def goodput(self):
+        #Here I assume that the bottleneck is the satellite link
+        if self.min_throughput == -1:
+            self.compute_throughput()
+        
+        return self.min_throughput*self.goodputRatio
+    
+    def time_to_transfer(self,filesize=100, goodput = True):
+        # Still need to add qpep delay
+        if goodput:
+            return filesize/self.goodput()
+        return filesize/self.min_throughput
