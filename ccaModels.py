@@ -331,7 +331,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         # 2. Solve the system of equation (16)&(17)
         ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
         self.pi = np.real(vs/vs.sum())[:,0]
-        return 
+        return self.pi
 
     def D(self,a,b) -> int:
         """ Number of packets sent between a and b
