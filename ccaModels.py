@@ -175,7 +175,7 @@ class CCA_MarkovChain_CUBIC_discrete(CCA_MarkovChain_CUBIC):
         for i in range(self.N):
             for j in range(self.N):
                 self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transistion from state i to j
-                L = np.cbrt((1-self.beta)*self.a[i-1]/self.alpha)
+                L = np.cbrt((1-self.beta)*self.a[i]/self.alpha)
                 self.S[i,j] = self.a[i]*self.tau[i,j] + self.alpha/4*((self.tau[i,j]-L)**4-L**4)
         return
     
@@ -277,9 +277,10 @@ class CCA_MarkovChain_Hybla_ssd(CCA_MarkovChain_Hybla_OG):
         return np.exp(-t_min*self.RTT/(self.avg_w(t=t_min,x=self.a[i-1])*self.packet_err))-np.exp(-t_max*self.RTT_real/(self.avg_w(t=t_max,x=self.a[i-1])*self.packet_err))
 
 class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
-    def __init__(self, distribution = False, *args,**kwargs):
+    def __init__(self, *args,**kwargs):
         super(CCA_MarkovChain_Hybla_discrete,self).__init__(*args,**kwargs)
-        self.distribution = distribution
+        # self.W = self.C*self.RTT0 # in Mbyte, where C is the maximum bandwidth
+        # self.a = (np.linspace(1,self.N,self.N)-0.5)*self.W/self.N # Discretisation of the window-size
         self.Dmin = np.zeros([self.N,self.N])
         self.Dmax = np.zeros([self.N,self.N])
         self.Ptilde = np.zeros((self.N,self.N))
