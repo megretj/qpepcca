@@ -1,3 +1,8 @@
+'''
+This file provides functions for the models to study congestion control algorithms as presented in the Thesis.
+'''
+
+
 import numpy as np
 import matplotlib.pyplot as plt
 import math
@@ -7,17 +12,17 @@ import logging, sys
 class CCA_MarkovChain:
     def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, RTT_est:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7):
         self.N = N # number of states
-        self.C = C # Bandwidth
-        self.W = C*RTT_real # in Mbyte, where C is the maximum bandwidth
-        self.RTT_real = RTT_real
-        self.RTT_est = RTT_est # in ms
+        self.C = C # Bottleneck bandwidth on the path (MSS/s)
+        self.W = C*RTT_real # Maximum window size to avoid congestion. In MSS
+        self.RTT_real = RTT_real # in s
+        self.RTT_est = RTT_est # in s
         self.packet_err = packet_err # probability that a packet drops 
         self.err_rate = err_rate # error rate
         self.beta = beta # window reduction ratio
         self.a = (np.linspace(1,N,N)-0.5)*self.W/N # Discretisation of the window-size
         self.pi = np.ones(N)/N # Stationnary Distribution
         self.P = np.zeros([self.N,self.N]) # Transition Probability Matrix
-        self.S = np.zeros([self.N,self.N])
+        self.S = np.zeros([self.N,self.N]) 
         self.tau = np.zeros([self.N,self.N]) 
         self.ssThroughput = 0 # Steady State average throughput
 
@@ -32,7 +37,7 @@ class CCA_MarkovChain_CUBIC(CCA_MarkovChain):
         return "CUBIC"
     
     def T(self,x,y):
-        """Growth time
+        """Time to grow from x to y
 
         Args:
             x (): initial cwnd (in Mb), before window size reduction of beta
@@ -44,6 +49,8 @@ class CCA_MarkovChain_CUBIC(CCA_MarkovChain):
         return np.cbrt((y-x)/self.alpha)+np.cbrt((1-self.beta)*x/self.alpha)
     
     def w(self,x,t):
+        """ Window size dynamics of CUBIC
+        """
         return self.alpha*(t-np.cbrt(x*(1-self.beta)/self.alpha))**3+x
     
     def transition_proba(self,i:int,j:int):
@@ -112,9 +119,10 @@ class CCA_MarkovChain_CUBIC_OG(CCA_MarkovChain_CUBIC):
 class CCA_MarkovChain_CUBIC_discrete(CCA_MarkovChain_CUBIC):
     def __init__(self, *args, **kwargs):
         super(CCA_MarkovChain_CUBIC_discrete,self).__init__(*args,**kwargs)
-        self.Dmin = np.zeros([self.N,self.N])
-        self.Dmax = np.zeros([self.N,self.N])
-        self.Ptilde = np.zeros((self.N,self.N))
+        # We need additional variables
+        self.Dmin = np.zeros([self.N,self.N]) # Minimum distance Matrix
+        self.Dmax = np.zeros([self.N,self.N]) # Maximum distance Matrix
+        self.Ptilde = np.zeros((self.N,self.N)) # Shifted transition probabilities
         self.compute_distances()
     
     def compute_distances(self):
