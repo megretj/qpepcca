@@ -1,3 +1,5 @@
+
+
 '''
 This file provides functions for the models to study congestion control algorithms as presented in the Thesis.
 '''
@@ -19,7 +21,7 @@ class CCA_MarkovChain:
         self.packet_err = packet_err # probability that a packet drops (for the packet model)
         self.err_rate = err_rate # error rate (for the time model)
         self.beta = beta # window reduction ratio
-        self.a = (np.linspace(1,N,N)-0.5)*self.W/N # Discretisation of the window-size
+        self.a = (np.arange(N)+0.5)*self.W/N # Discretisation of the window-size
         self.pi = np.ones(N)/N # Stationnary Distribution
         self.P = np.zeros([self.N,self.N]) # Transition Probability Matrix
         self.S = np.zeros([self.N,self.N]) 
@@ -29,24 +31,12 @@ class CCA_MarkovChain:
 
     def update(self):
         self.W = self.C*self.RTT_real # Maximum window size to avoid congestion. In MSS
-        self.a = (np.linspace(1,self.N,self.N)-0.5)*self.W/self.N
+        self.a = (np.arange(self.N)+0.5)*self.W/self.N
         self.pi = np.ones(self.N)/self.N # Stationnary Distribution
         self.P = np.zeros([self.N,self.N]) # Transition Probability Matrix
         self.S = np.zeros([self.N,self.N]) 
         self.tau = np.zeros([self.N,self.N]) 
         self.ssThroughput = 0 # Steady State average throughput
-    
-    def transition_proba(self,i:int,j:int):
-        """Pij, probability to transition from state a_i to a_j
-
-        Args:
-            i (int): initial state
-            j (int): final state
-
-        Returns:
-            float: NEED TO REDEFINE THAT FUNCTION FOR SPECIFIC MODELS
-        """
-        return 
 
     def compute_stationnary_distribution(self):
         # 1. Compute the transition probability Matrix P
@@ -54,8 +44,8 @@ class CCA_MarkovChain:
             for j in range(self.N):
                 if j == self.N-1:
                     self.P[i,j] = 1-np.sum(self.P[i,:-1])
-                    continue
-                self.P[i,j] = self.transition_proba(i,j)
+                else:
+                    self.P[i,j] = self.transition_proba(i,j)
         # 2. Solve the system of equation (16)&(17) 
         # piP = pi <=> pi(P-I)=0 <=> (P-I)^T pi = 0 
         # so pi is a left eigenvector of P, with eigenvalue 1
@@ -92,15 +82,27 @@ class CCA_MarkovChain_CUBIC(CCA_MarkovChain):
         """
         return self.alpha*(t-np.cbrt(x*(1-self.beta)/self.alpha))**3+x
     
+    def transition_proba(self,i:int,j:int):
+        """Pij, probability to transition from state a_i to a_j
+
+        Args:
+            i (int): initial state
+            j (int): final state
+
+        Returns:
+            float: NEED TO REDEFINE THAT FUNCTION FOR SPECIFIC MODELS
+        """
+        return 0
+    
 class CCA_MarkovChain_CUBIC_time(CCA_MarkovChain_CUBIC):
     
-    def transition_proba(self,i,j): # FIX INDICES SO THAT WE ALWAYS STAY WITH A_0 to A_N-1
+    def transition_proba(self,i,j): # Probability to transition from i to j
         l = self.err_rate
-        if j < self.beta*(i+0.5):
+        if j+1 < self.beta*(i+0.5):
             return 0
-        if j == self.N:
+        if j+1 == self.N:
             sum = 0
-            for jp in np.linspace(1,self.N-1,self.N-1):
+            for jp in range(self.N-1):
                 if jp >= self.beta*(i+0.5):
                     sum += self.transition_proba(i,jp)
             return 1-sum
@@ -109,8 +111,8 @@ class CCA_MarkovChain_CUBIC_time(CCA_MarkovChain_CUBIC):
     def compute_tau_and_S(self):
         for i in range(self.N):
             for j in range(self.N):
-                self.tau[i,j] = np.maximum(self.T(self.a[i],(j-0.5)*self.W/self.N),0) # average time duration for state transistion from state i to j
-                L = np.cbrt((1-self.beta)*self.a[i-1]/self.alpha)
+                self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transistion from state i to j
+                L = np.cbrt((1-self.beta)*self.a[i]/self.alpha)
                 self.S[i,j] = self.a[i]*self.tau[i,j] + self.alpha/4*((self.tau[i,j]-L)**4-L**4)
         return
     
@@ -240,6 +242,9 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
         """ Window size dynamics of Hybla
         """
         return self.alpha*self.rho*t+x
+
+    def transition_proba_Hybla(self,i,j):
+        return 0
     
     def compute_stationnary_distribution(self):
         # 1. Compute the transition probability Matrix P
@@ -259,7 +264,7 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
 
 class CCA_MarkovChain_Hybla_time(CCA_MarkovChain_Hybla):
     
-    def transition_proba(self,i,j):
+    def transition_proba_Hybla(self,i,j):
         l = self.err_rate
         if j < self.beta*(i-0.5):
             return 0
