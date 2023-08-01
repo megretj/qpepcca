@@ -234,53 +234,27 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
         Returns:
             _type_: Time, in seconds, it takes to grow from beta*x to y.
         """
-        if y <= x:
-            return 0
-        return self.RTT0/(self.alpha*self.rho)*(y-self.beta*x)
-    
-    def w(self,x,t):
-        """ Window size dynamics of Hybla
-        """
-        return self.alpha*self.rho*t+x
-
-    def transition_proba_Hybla(self,i,j):
-        return 0
-    
-    def compute_stationnary_distribution(self):
-        # 1. Compute the transition probability Matrix P
-        for i in range(self.N):
-            for j in range(self.N):
-                if j == self.N-1:
-                    self.P[i,j] = 1-np.sum(self.P[i,:-1])
-                    continue
-                self.P[i,j] = self.transition_proba_Hybla(i,j)
-
-        # 2. Solve the system of equation (16)&(17)
-        w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-        self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-        #ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
-        #self.pi = np.real(vs/vs.sum())[:,0]
-        return 
+        return self.RTT0/self.rho*(y-self.beta*x)
 
 class CCA_MarkovChain_Hybla_time(CCA_MarkovChain_Hybla):
     
-    def transition_proba_Hybla(self,i,j):
+    def transition_proba(self,i,j): # Probability to transition from i to j
         l = self.err_rate
-        if j < self.beta*(i-0.5):
+        if j+1 < self.beta*(i+0.5):
             return 0
-        if j == self.N-1:
+        if j+1 == self.N:
             sum = 0
-            for jp in np.linspace(1,self.N-1,self.N-1):
-                if jp >= self.beta*(i-0.5):
-                    sum += self.transition_proba_Hybla(i,jp)
+            for jp in range(self.N-1):
+                if jp >= self.beta*(i+0.5):
+                    sum += self.transition_proba(i,jp)
             return 1-sum
-        return np.exp(-l* np.maximum(self.T(self.a[i-1],(j-1)*self.W/self.N),0)) - np.exp(-l* self.T(self.a[i-1],j*self.W/self.N))
+        return np.exp(-l* np.maximum(self.T(self.a[i],(j)*self.W/self.N),0)) - np.exp(-l* self.T(self.a[i],(j+1)*self.W/self.N))
         
     def compute_tau_and_S(self):
         for i in range(self.N):
             for j in range(self.N):
-                self.tau[i,j] = np.maximum(self.T(self.a[i],(j-0.5)*self.W/self.N),0) # average time duration for state transistion from state i to j
-                self.S[i,j] = (self.a[i]*self.tau[i,j]*self.beta + self.rho*self.tau[i,j]**2/(2*self.RTT0))/self.RTT_real
+                self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transistion from state i to j
+                self.S[i,j] = (self.a[i]*self.tau[i,j]*self.beta + self.rho*self.tau[i,j]**2/(2*self.RTT0))
         return
     
     def avg_throughput(self):
@@ -288,21 +262,21 @@ class CCA_MarkovChain_Hybla_time(CCA_MarkovChain_Hybla):
         self.compute_tau_and_S()
         numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.ssThroughput = 1/self.W*numerator/denominator
+        self.ssThroughput = numerator/denominator/self.W
         return self.ssThroughput
 
 class CCA_MarkovChain_Hybla_ssd(CCA_MarkovChain_Hybla_time):
     def avg_w(self,t,x): # packets sent every RTT (for state-depedent lambda)
         return self.beta*x+self.rho*t/(2*self.RTT0)
     
-    def transition_proba_Hybla(self,i,j):
+    def transition_proba(self,i,j):
         if j < self.beta*(i-0.5):
             return 0
         if j == self.N:
             sum = 0
             for jp in np.linspace(1,self.N-1,self.N-1):
                 if jp >= self.beta*(i-0.5):
-                    sum += self.transition_proba_Hybla(i,jp)
+                    sum += self.transition_proba(i,jp)
             return 1-sum
         t_min = np.maximum(self.T(self.a[i-1],(j-1)*self.W/self.N),0)
         t_max = self.T(self.a[i-1],j*self.W/self.N)
