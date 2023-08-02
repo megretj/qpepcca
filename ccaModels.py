@@ -68,6 +68,11 @@ class CCA_MarkovChain:
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
         self.ssThroughput = numerator/denominator/self.W
         return self.ssThroughput
+    
+    def sscwnd(self):
+        if self.ssThroughput == 0:
+            self.avg_throughput()
+        return self.ssThroughput*self.W
 
 ###----------------------CUBIC START-----------------------------###
 
@@ -206,14 +211,6 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
                 L = np.cbrt((1-self.beta)*self.a[i]/self.alpha)
                 self.S[i,j] = self.a[i]*self.tau[i,j] + self.alpha/4*((self.tau[i,j]-L)**4-L**4)
         return
-    
-    def avg_throughput(self):
-        self.compute_stationnary_distribution()
-        self.compute_tau_and_S()
-        numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
-        denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.ssThroughput = numerator/denominator*1/self.RTT_real
-        return self.ssThroughput
 
 ######------------------------- CUBIC END -----------------------------######
 ######------------------------- HYBLA START ---------------------------######
@@ -352,3 +349,75 @@ class CCA_MarkovChain_Hybla_packet(CCA_MarkovChain_Hybla):
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
         self.ssThroughput = numerator/denominator*1/self.RTT_real
         return self.ssThroughput
+
+class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
+    def __init__(self, *args,**kwargs):
+        super(CCA_MarkovChain_Hybla_packet_new,self).__init__(*args,**kwargs)
+        # self.W = self.C*self.RTT0 # in Mbyte, where C is the maximum bandwidth
+        # self.a = (np.linspace(1,self.N,self.N)-0.5)*self.W/self.N # Discretisation of the window-size
+        self.Dmin = np.zeros([self.N,self.N])
+        self.Dmax = np.zeros([self.N,self.N])
+        self.Ptilde = np.zeros((self.N,self.N))
+        self.N_avg = np.zeros((self.N,self.N)) #shifted version of D_avg so that i corresponds to the starting value before the window reduction
+        self.compute_distances()
+
+    def D(self,a,b) -> int:
+        """ Number of packets sent between a and b
+
+        Args:
+            a (_type_): initial window size (after the window size reduction)
+            b (_type_): target window size
+
+        Returns:
+            int: number of packets sent between a and b
+        """
+        return (b*b-a*a)/(2*self.rho*self.rho)
+    
+    def compute_distances(self):
+        """Computes the number of packets required to transition from any state a_i to any state a_j.
+
+        """
+        for i in range(self.N):
+            for j in range(i,self.N):
+                if j == i:
+                    self.Dmin[i,j] = 1
+                    continue
+                self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),1)
+                self.Dmax[i,j-1] = self.Dmin[i,j]
+        return
+
+    def transition_proba_tilde_Hybla(self,i, j):
+        if j<i:
+            return 0
+        nmin = self.Dmin[i,j]
+        nmax = self.Dmax[i,j]
+
+        if j == self.N -1:
+            return (1-self.packet_err)**(nmin-1)
+
+        return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
+    
+    def compute_stationnary_distribution(self):
+        # 1. Compute the transition probability Matrix P
+        # First the shifted version
+        for i in range(self.N): # Actually would only need to compute up to (N-1)beta
+            for j in range(self.N):
+                #if j == self.N-1:
+                #    self.Ptilde[i,j] = 1-np.sum(self.Ptilde[i,:-1])
+                #    continue
+                self.Ptilde[i,j] = self.transition_proba_tilde_Hybla(i,j)
+        # Then recover P from Ptilde
+        for i in range(self.N):
+            self.P[i,:] = self.Ptilde[int(i*self.beta),:]
+        self.P = self.P.round(3)
+        # 2. Solve the system of equation (16)&(17)
+        ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P.round(3)),k=1,sigma=1)
+        self.pi = np.abs(np.real(vs/vs.sum())[:,0].round(3))
+        return self.pi
+
+    def compute_tau_and_S(self):
+        for i in range(self.N):
+            for j in range(self.N):
+                self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transition from state i to j
+                self.S[i,j] = self.tau[i,j]*(self.beta*self.a[i]+self.a[j])/2
+        return
