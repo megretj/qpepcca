@@ -2,6 +2,7 @@
 
 '''
 This file provides functions for the models to study congestion control algorithms as presented in the Thesis.
+When changing the parameters, it is safer to create a new instance of the class as many variables depend on each other and are only updated in the intitialisation. 
 '''
 
 
@@ -12,12 +13,11 @@ import scipy
 import logging, sys
 
 class CCA_MarkovChain:
-    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, RTT_est:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
+    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
         self.N = N # number of states
         self.C = C # Bottleneck bandwidth on the path (MSS/s)
         self.W = C*RTT_real # Maximum window size to avoid congestion. In MSS
-        self.RTT_real = RTT_real # in s
-        self.RTT_est = RTT_est # in s
+        self.RTT_real = RTT_real # in seconds
         self.packet_err = packet_err # probability that a packet drops (for the packet model)
         self.err_rate = err_rate # error rate (for the time model)
         self.beta = beta # window reduction ratio
@@ -55,6 +55,19 @@ class CCA_MarkovChain:
         #ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
         #self.pi = np.real(vs/vs.sum())[:,0]
         return self.pi
+    
+    def avg_throughput(self):
+        """Computes the average throughput of a segment instance.
+
+        Returns:
+            _type_: _description_
+        """
+        self.compute_stationnary_distribution()
+        self.compute_tau_and_S()
+        numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
+        denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
+        self.ssThroughput = numerator/denominator/self.W
+        return self.ssThroughput
 
 ###----------------------CUBIC START-----------------------------###
 
@@ -116,14 +129,6 @@ class CCA_MarkovChain_CUBIC_time(CCA_MarkovChain_CUBIC):
                 self.S[i,j] = self.a[i]*self.tau[i,j] + self.alpha/4*((self.tau[i,j]-L)**4-L**4)
         return
     
-    def avg_throughput(self):
-        self.compute_stationnary_distribution()
-        self.compute_tau_and_S()
-        numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
-        denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.ssThroughput = numerator/denominator/self.W
-        return self.ssThroughput
-    
 class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
     def __init__(self, *args, **kwargs):
         super(CCA_MarkovChain_CUBIC_packet,self).__init__(*args,**kwargs)
@@ -135,19 +140,22 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         
     def update(self):
         super(CCA_MarkovChain_CUBIC_packet,self).update()
+        self.Dmin = np.zeros([self.N,self.N]) # Minimum distance Matrix
+        self.Dmax = np.zeros([self.N,self.N]) # Maximum distance Matrix
+        self.Ptilde = np.zeros((self.N,self.N)) # Shifted transition probabilities
         self.compute_distances()
     
     def compute_distances(self):
-        for i in range(int(np.ceil(self.N/self.beta))):
+        for i in range(self.N):
             for j in range(i,self.N):
                 if j == i:
                     self.Dmin[i,j] = 1
-                else:
-                    self.Dmin[i,j] = self.Dmax[i,j-1]+1
-                self.Dmax[i,j] = self.D(self.a[i],(j+1)*self.W/self.N)
+                    continue
+                self.Dmin[i,j] = self.D(self.a[i],j*self.W/self.N)
+                self.Dmax[i,j-1] = self.Dmin[i,j]-1
         return
 
-    def D(self,x,y) -> int:
+    def D(self,a,b) -> int:
         """Number of segments sent within the transition from x (after reduction) to y (upper bounded since we assume cwnd packets are sent every RTT )
 
         Args:
@@ -157,13 +165,13 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         Returns:
             int: number of segments 
         """
-        T = self.T(x*self.beta,y)/self.RTT_real
+        T = self.T(a/self.beta,b)/self.RTT_real
         l = int(np.floor(T))
         delta = T - l
         sum = 0
         for k in range(l):
-            sum += self.w(x,k*self.RTT_real)
-        return int(np.floor(sum+delta*self.w(x,l*self.RTT_real)))
+            sum += self.w(a/self.beta,k*self.RTT_real)
+        return int(np.floor(sum+delta*self.w(a/self.beta,l*self.RTT_real)))
 
     def transition_proba_tilde_CUBIC(self,i, j):
         if j<i:
@@ -172,7 +180,7 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         nmax = self.Dmax[i,j]
         #print(f"From {self.a[int(self.beta*i)]} to [{(j-1)*self.W/self.N},{j*self.W/self.N}]")
         #print(nmin,nmax)
-        if j == self.N -1:
+        if j == self.N-1:
             return (1-self.packet_err)**(nmin-1)
 
         return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
@@ -205,7 +213,6 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
         denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
         self.ssThroughput = numerator/denominator*1/self.RTT_real
-        #self.ssThroughput= numerator/denominator
         return self.ssThroughput
 
 ######------------------------- CUBIC END -----------------------------######
@@ -256,36 +263,10 @@ class CCA_MarkovChain_Hybla_time(CCA_MarkovChain_Hybla):
                 self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transistion from state i to j
                 self.S[i,j] = (self.a[i]*self.tau[i,j]*self.beta + self.rho*self.tau[i,j]**2/(2*self.RTT0))
         return
-    
-    def avg_throughput(self):
-        self.compute_stationnary_distribution()
-        self.compute_tau_and_S()
-        numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
-        denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
-        self.ssThroughput = numerator/denominator/self.W
-        return self.ssThroughput
 
-class CCA_MarkovChain_Hybla_ssd(CCA_MarkovChain_Hybla_time):
-    def avg_w(self,t,x): # packets sent every RTT (for state-depedent lambda)
-        return self.beta*x+self.rho*t/(2*self.RTT0)
-    
-    def transition_proba(self,i,j):
-        if j < self.beta*(i-0.5):
-            return 0
-        if j == self.N:
-            sum = 0
-            for jp in np.linspace(1,self.N-1,self.N-1):
-                if jp >= self.beta*(i-0.5):
-                    sum += self.transition_proba(i,jp)
-            return 1-sum
-        t_min = np.maximum(self.T(self.a[i-1],(j-1)*self.W/self.N),0)
-        t_max = self.T(self.a[i-1],j*self.W/self.N)
-
-        return np.exp(-t_min*self.RTT/(self.avg_w(t=t_min,x=self.a[i-1])*self.packet_err))-np.exp(-t_max*self.RTT_real/(self.avg_w(t=t_max,x=self.a[i-1])*self.packet_err))
-
-class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
+class CCA_MarkovChain_Hybla_packet(CCA_MarkovChain_Hybla):
     def __init__(self, *args,**kwargs):
-        super(CCA_MarkovChain_Hybla_discrete,self).__init__(*args,**kwargs)
+        super(CCA_MarkovChain_Hybla_packet,self).__init__(*args,**kwargs)
         # self.W = self.C*self.RTT0 # in Mbyte, where C is the maximum bandwidth
         # self.a = (np.linspace(1,self.N,self.N)-0.5)*self.W/self.N # Discretisation of the window-size
         self.Dmin = np.zeros([self.N,self.N])
@@ -302,9 +283,9 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
             for j in range(i,self.N):
                 if j == i:
                     self.Dmin[i,j] = 1
-                else:
-                    self.Dmin[i,j] = self.Dmax[i,j-1]+1
-                self.Dmax[i,j] = max(self.D(self.a[i],(j+1)*self.W/self.N),1)
+                    continue
+                self.Dmin[i,j] = self.D(self.a[i],j*self.W/self.N)
+                self.Dmax[i,j-1] = self.Dmin[i,j]-1
 
         D_avg = (self.Dmin+self.Dmax)/2 
         for i in range(self.N):
@@ -319,9 +300,7 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
 
         if j == self.N -1:
             return (1-self.packet_err)**(nmin-1)
-        
-        #print(f"From {self.a[int(self.beta*i)]} to [{(j-1)*self.W/self.N},{j*self.W/self.N}]")
-        #print(nmin,nmax)
+
         return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
     
     def compute_stationnary_distribution(self):
@@ -351,28 +330,25 @@ class CCA_MarkovChain_Hybla_discrete(CCA_MarkovChain_Hybla):
         Returns:
             int: number of packets sent between a and b
         """
-        if b<=a:
-            return 0
-        U = (b-a)/self.rho**2
-        Uf = np.floor(U)
-        return int(U*(a+Uf*self.rho**2)-self.rho**2*(Uf+Uf**2)/2)
+        # OLD VERSION
+        # if b<=a:
+        #     return 0
+        # U = (b-a)/self.rho**2
+        # Uf = np.floor(U)
+        # return int(U*(a+Uf*self.rho**2)-self.rho**2*(Uf+Uf**2)/2)
+        return int((b*b-a*a)/(2*self.rho*self.rho))
 
-    def compute_times(self):
+    def compute_tau_and_S(self):
         for i in range(self.N):
             for j in range(self.N):
-                self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transistion from state i to j
+                self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transition from state i to j
+                self.S[i,j] = self.tau[i,j]*(self.beta*self.a[i]+self.a[j])/2
         return
     
     def avg_throughput(self):
         self.compute_stationnary_distribution()
-        self.compute_times()
-        num = 0
-        denom = 0
-        self.ssThroughput = 0
-        for i in range(self.N):
-            for j in range(self.N):
-                if self.tau[i,j]>0:
-                    num+= (self.beta * self.a[i]+self.a[j])/2*self.pi[i]*self.P[i,j]*self.tau[i,j]
-                    denom += self.pi[i]*self.P[i,j]*self.tau[i,j]
-        self.ssThroughput=num/denom/self.RTT_real
+        self.compute_tau_and_S()
+        numerator = np.dot(self.pi,np.dot(self.P,np.transpose(self.S)).diagonal())
+        denominator = np.dot(self.pi,np.dot(self.P,np.transpose(self.tau)).diagonal())
+        self.ssThroughput = numerator/denominator*1/self.RTT_real
         return self.ssThroughput
