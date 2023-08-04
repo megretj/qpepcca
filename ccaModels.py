@@ -50,10 +50,10 @@ class CCA_MarkovChain:
         # piP = pi <=> pi(P-I)=0 <=> (P-I)^T pi = 0 
         # so pi is a left eigenvector of P, with eigenvalue 1
         # Furthermore, pis L1 norm needs to be equal to 1 
-        w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-        self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-        #ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
-        #self.pi = np.real(vs/vs.sum())[:,0]
+        # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+        # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+        ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+        self.pi = np.real(vs/vs.sum())[:,0]
         return self.pi
     
     def avg_throughput(self):
@@ -138,8 +138,8 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
     def __init__(self, *args, **kwargs):
         super(CCA_MarkovChain_CUBIC_packet,self).__init__(*args,**kwargs)
         # We need additional variables
-        self.Dmin = np.zeros([self.N,self.N]) # Minimum distance Matrix
-        self.Dmax = np.zeros([self.N,self.N]) # Maximum distance Matrix
+        self.Dmin = np.ones([self.N,self.N]) # Minimum distance Matrix
+        self.Dmax = np.ones([self.N,self.N]) # Maximum distance Matrix
         self.Ptilde = np.zeros((self.N,self.N)) # Shifted transition probabilities
         self.compute_distances()
         
@@ -156,8 +156,8 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
                 if j == i:
                     self.Dmin[i,j] = 1
                     continue
-                self.Dmin[i,j] = self.D(self.a[i],j*self.W/self.N)
-                self.Dmax[i,j-1] = self.Dmin[i,j]-1
+                self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),1)
+                self.Dmax[i,j-1] = self.Dmin[i,j]
         return
 
     def D(self,a,b) -> int:
@@ -202,6 +202,8 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         # 2. Solve the system of equation (16)&(17)
         ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
         self.pi = np.real(vs/vs.sum())[:,0]
+        # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+        # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
         return 
 
     def compute_tau_and_S(self):
@@ -212,6 +214,55 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
                 self.S[i,j] = self.a[i]*self.tau[i,j] + self.alpha/4*((self.tau[i,j]-L)**4-L**4)
         return
 
+class CCA_MarkovChain_CUBIC_Poojary():
+    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
+        self.N = N # number of states
+        self.C = C # Bottleneck bandwidth on the path (MSS/s)
+        self.W = C*RTT_real # Maximum window size to avoid congestion. In MSS
+        self.RTT_real = RTT_real # in seconds
+        self.packet_err = packet_err # probability that a packet drops (for the packet model)
+        self.beta = beta # window reduction ratio
+        self.alpha = alpha # window growth rate
+        self.ssThroughput = 0 # Steady State average throughput
+    
+    def __str__(self):
+        return "CUBIC Poojary"
+    
+    def wn_cub(self,x,t,r):
+        return self.alpha*(r*t-np.cbrt(x*(1-self.beta)/self.alpha))**3+x
+
+    def simulate(self, T:int = 1000):
+        """Simulates the Markov Chain for T steps
+
+        Args:
+            T (int, optional): Number of steps to simulate. Defaults to 1000.
+        """
+        states = np.zeros(1000)
+        T = 1000
+        initial_state = 2
+        epoch_state = initial_state
+        epoch_time = 0
+
+        for t in range(T):
+            if t == 0:
+                states[t] = initial_state
+                continue
+            prob_no_loss = (1-self.packet_err)**(states[t-1])
+            if np.random.choice([0,1],p=[prob_no_loss,1-prob_no_loss])==1:
+                # Packet was lost
+                states[t] = states[t-1]*self.beta
+                epoch_state = states[t-1]
+                epoch_time = 0
+            elif self.wn_cub(epoch_state,epoch_time,self.RTT_real) > self.W:
+                # Congestion
+                states[t] = states[t-1]*self.beta
+                epoch_state = states[t-1]
+                epoch_time = 0
+            else:
+                # Packet was not lost
+                states[t] = self.wn_cub(epoch_state,epoch_time,self.RTT_real)
+                epoch_time += 1
+        return states
 ######------------------------- CUBIC END -----------------------------######
 ######------------------------- HYBLA START ---------------------------######
 
@@ -397,9 +448,7 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
 
         return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
     
-    def compute_stationnary_distribution(self):
-        # 1. Compute the transition probability Matrix P
-        # First the shifted version
+    def compute_transistion_matrix(self):
         for i in range(self.N): # Actually would only need to compute up to (N-1)beta
             for j in range(self.N):
                 #if j == self.N-1:
@@ -409,6 +458,12 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
         # Then recover P from Ptilde
         for i in range(self.N):
             self.P[i,:] = self.Ptilde[int(i*self.beta),:]
+        return self.P
+
+    def compute_stationnary_distribution(self):
+        # 1. Compute the transition probability Matrix P
+        # First the shifted version
+        self.compute_transistion_matrix()
         self.P = self.P.round(3)
         # 2. Solve the system of equation (16)&(17)
         ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P.round(3)),k=1,sigma=1)
