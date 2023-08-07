@@ -66,15 +66,14 @@ TraceCwnd(std::string cwnd_tr_file_name, uint32_t nodeId)
 }
 
 static void
-Measurement(std::string bandwidth = "1Mbps", std::string delay = "100ms", double error_p = 0.01, std::string transport_prot = "TcpHybla", uint32_t iteration = 0, double beta= 0.7)
+Measurement(std::string bandwidth = "1Mbps", std::string delay = "100ms", double error_p = 0.01, std::string transport_prot = "TcpHybla", uint32_t iteration = 0, std::string access_bandwidth = "100Mbps", double beta= 0.7)
 {
-    std::string access_bandwidth = "100Mbps";
     std::string access_delay = "0ms";
     bool tracing = true;
     std::string prefix_file_name = transport_prot+ "/" + transport_prot + std::to_string(error_p)+ "-" + delay+ "-" + bandwidth + "-" + std::to_string(iteration);
     uint64_t data_mbytes = 0; // 0 means unlimited sending capacity for BulkSendApplication
     uint32_t mtu_bytes = 400; // The MTU means the maximum transmission unit, which is the maximum size of a packet that can be transmitted over the network otherwise known as MSS (maximum segment size)
-    double duration = 400.0;
+    double duration = 500.0;
     uint32_t run = 0;
     bool flow_monitor = false;
     bool sack = false;
@@ -267,7 +266,7 @@ main(int argc, char* argv[])
     }
 
     // Generate the linspace of bandwidths
-    std::vector<std::string> bandwidths = {"10Kbps"};
+    std::vector<std::string> bandwidths = {"1Mbps"};
     
     std::cout << "Starting simulation" << std::endl;
     auto start = std::chrono::system_clock::now();
@@ -278,7 +277,7 @@ main(int argc, char* argv[])
             for (const auto& delay : delays) {
                 for (int iter = 0; iter < 1; ++iter){
                 // Measurement(bandwidth, std::to_string(delay) + "ms", err, "TcpHybla", iter);
-                Measurement(bandwidth, std::to_string(delay) + "ms", err, "TcpCubic", iter);
+                Measurement(bandwidth, std::to_string(delay) + "ms", err, "TcpCubic",iter,"10Kbps");
                 }
                 std::cout << "Finished delay " << std::to_string(delay).c_str() << std::endl;
             }
