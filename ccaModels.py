@@ -12,6 +12,24 @@ import math
 import scipy
 import logging, sys
 
+def find_zero_columns(P):
+    return np.where(~P.any(axis=0))[0]
+
+def remove_indices(P,indices):
+    return np.delete(np.delete(P,indices,axis=1),indices,axis=0)
+
+def replace_indices_with_zeros(v,indices):
+    if len(indices) == 0:
+        return v
+    newV = np.zeros(v.size+len(indices))
+    offset = 0
+    for i in range(len(v)):
+        if i in indices:
+            offset += 1
+        newV[i+offset] = v[i]
+    return newV
+
+
 class CCA_MarkovChain:
     def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
         self.N = N # number of states
@@ -190,8 +208,7 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
 
         return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
     
-    def compute_stationnary_distribution(self):
-        # 1. Compute the transition probability Matrix P
+    def compute_transition_matrix(self):
         # First the shifted version
         for i in range(self.N): # Actually would only need to compute up to (N-1)beta
             for j in range(self.N):
@@ -199,39 +216,44 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         # Then recover P from Ptilde
         for i in range(self.N):
             self.P[i,:] = self.Ptilde[int(i*self.beta),:]
-        self.P = self.P.round(5)
-        # 2. Solve the system of equation (16)&(17)
+        #self.P = self.P.round(3)
+        return self.P
     
-        
-        if np.where(~self.P.any(axis=0))[0].size > 0:
-            zero_cols = 0
-            tempP = self.P.copy()
-            while np.where(~tempP.any(axis=0))[0].size > 0:
-                temp_zero_cols=np.where(~tempP.any(axis=0))[0]
-                zero_cols=zero_cols+temp_zero_cols.size
-                tempP = np.delete(tempP,temp_zero_cols,axis=1)
-                tempP = np.delete(tempP,temp_zero_cols,axis=0)
-            newP = tempP
-            try:
-                ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(newP),k=1,sigma=1)
-                self.pi = np.real(vs/vs.sum())[:,0]
-            except:
-                print(zero_cols)
-                print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the transition matrix are {newP[:,-1]}")
-                return self.pi
-            self.pi = np.pad(self.pi,(0,zero_cols), 'constant', constant_values=0)
-        else:
-            try:
-                # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-                # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-                ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P.round(3)),k=1,sigma=1)
-                self.pi = np.abs(np.real(vs/vs.sum())[:,0].round(3))
-            except:
-                print(np.linalg.matrix_rank(self.P))
-                print(f"Error in computing the stationnary distribution the last five rows and columns of the transition matrix are {self.P[95:,95:]}")
-                print(f"Error in computing the stationnary distribution the first five rows and columns of the transition matrix are {self.P[:5,:5]}")
-                self.pi = np.ones(self.N)/self.N
-                print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
+    def compute_stationnary_distribution(self):
+        # 1. Compute the transition probability Matrix P
+        self.compute_transition_matrix()
+
+        # 2. Solve the system of equation
+        if self.P[0,0]-1<1e-5: # First state is absorbing
+            self.pi = np.array([1]+[0]*(self.N-1))
+            return self.pi
+
+        cols = np.arange(self.N)
+        zero_cols = []
+        reduP = self.P.copy()
+        while np.where(~reduP.any(axis=0))[0].size > 0:
+            # To solve the issue with unreachable states, we check if a column is zero
+            # if so, we remove the corresponding row and column and solve the system on the reduced matrix
+            # We need to do this recursively until we have non-zero columns
+            temp_zero_cols = np.where(~reduP.any(axis=0))[0] # find zero columns
+            zero_cols.extend([cols[i] for i in temp_zero_cols]) # add original indices to the list of zero columns
+            reduP = np.delete(reduP,temp_zero_cols,axis=0) # remove zero columns
+            reduP = np.delete(reduP,temp_zero_cols,axis=1) # remove zero rows
+            cols = np.delete(cols,temp_zero_cols,axis=0) # remove indices that correspond to zero columns
+        try:
+            # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+            # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
+            redupi = np.real(vs/vs.sum())[:,0]
+        except:
+            # print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the reduced transition matrix are {reduP[-5:,-5:]}")
+            print(f"Error in computing the reduced stationnary distribution.")
+            print(f"P had rank {np.linalg.matrix_rank(self.P)}. Reduced P has rank {np.linalg.matrix_rank(reduP)} Zero columns where at indices: {zero_cols}")
+            print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
+            print(reduP)
+            self.pi = np.ones(self.N)/self.N # This makes it possible to continue the simulation and see on the graph that there was an error
+            return self.pi
+        self.pi = replace_indices_with_zeros(redupi,zero_cols)
         return self.pi
         
 
@@ -488,37 +510,42 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
         for i in range(self.N):
             self.P[i,:] = self.Ptilde[int(i*self.beta),:]
         return self.P
-
+    
     def compute_stationnary_distribution(self):
         # 1. Compute the transition probability Matrix P
-        # First the shifted version
         self.compute_transistion_matrix()
-        self.P = self.P.round(5)
-        # 2. Solve the system of equation (16)&(17)
-        # To solve the issue with the absorbing states, we remove any column that is zero and its corresponding row
-        # We then do the eigenvalue decomposition on the reduced matrix
-        # We then pad the resulting eigenvector with zeros on the indices that were removed
-        
-        zero_cols = np.where(~self.P.any(axis=0))[0]
-        if zero_cols.size > 0:
-            print(zero_cols)
-            newP = np.delete(self.P,zero_cols,axis=1)
-            newP = np.delete(newP,zero_cols,axis=0)
-            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(newP),k=1,sigma=1)
-            self.pi = np.real(vs/vs.sum())[:,0]
-            print(self.pi)
-            self.pi = np.pad(self.pi,(0,zero_cols.size), 'constant', constant_values=0)
-            print(self.pi)
-        else:
-            try:
-                ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P.round(3)),k=1,sigma=1)
-                self.pi = np.abs(np.real(vs/vs.sum())[:,0].round(3))
-            except:
-                print(np.linalg.matrix_rank(self.P))
-                print(f"Error in computing the stationnary distribution the last five rows and columns of the transition matrix are {self.P[95:,95:]}")
-                print(f"Error in computing the stationnary distribution the first five rows and columns of the transition matrix are {self.P[:5,:5]}")
-                self.pi = np.ones(self.N)/self.N
-                print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
+
+        # 2. Solve the system of equation
+        if self.P[0,0]-1<1e-5:
+            self.pi = np.array([1]+[0]*(self.N-1))
+            return self.pi
+
+        cols = np.arange(self.N)
+        zero_cols = []
+        reduP = self.P.copy()
+        while np.where(~reduP.any(axis=0))[0].size > 0:
+            # To solve the issue with unreachable states, we check if a column is zero
+            # if so, we remove the corresponding row and column and solve the system on the reduced matrix
+            # We need to do this recursively until we have non-zero columns
+            temp_zero_cols = np.where(~reduP.any(axis=0))[0] # find zero columns
+            zero_cols.extend([cols[i] for i in temp_zero_cols]) # add original indices to the list of zero columns
+            reduP = np.delete(reduP,temp_zero_cols,axis=0) # remove zero columns
+            reduP = np.delete(reduP,temp_zero_cols,axis=1) # remove zero rows
+            cols = np.delete(cols,temp_zero_cols,axis=0) # remove indices that correspond to zero columns
+        try:
+            # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+            # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
+            redupi = np.real(vs/vs.sum())[:,0]
+        except:
+            # print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the reduced transition matrix are {reduP[-5:,-5:]}")
+            print(f"Error in computing the reduced stationnary distribution.")
+            print(f"P had rank {np.linalg.matrix_rank(self.P)}. Reduced P has rank {np.linalg.matrix_rank(reduP)} Zero columns where at indices: {zero_cols}")
+            print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
+            print(reduP)
+            self.pi = np.ones(self.N)/self.N # This makes it possible to continue the simulation and see on the graph that there was an error
+            return self.pi
+        self.pi = replace_indices_with_zeros(redupi,zero_cols)
         return self.pi
 
     def compute_tau_and_S(self):
