@@ -224,7 +224,7 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         self.compute_transition_matrix()
 
         # 2. Solve the system of equation
-        if self.P[0,0]-1<1e-5: # First state is absorbing
+        if abs(self.P[0,0]-1)<1e-5: # First state is absorbing
             self.pi = np.array([1]+[0]*(self.N-1))
             return self.pi
 
@@ -254,6 +254,11 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
             self.pi = np.ones(self.N)/self.N # This makes it possible to continue the simulation and see on the graph that there was an error
             return self.pi
         self.pi = replace_indices_with_zeros(redupi,zero_cols)
+        # if np.any(self.pi<0):
+        #     print(f"Error in computing the stationnary distribution. Negative values in the distribution. reduced pi size is{redupi.size} and is {redupi}")
+        #     sys.exit()
+        # if abs(np.sum(self.pi) - 1) > 1e-5:
+        #     print(f"Error in computing the stationnary distribution. Sum of the distribution is {np.sum(self.pi)}")
         return self.pi
         
 
@@ -499,12 +504,9 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
 
         return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
     
-    def compute_transistion_matrix(self):
+    def compute_transition_matrix(self):
         for i in range(self.N): # Actually would only need to compute up to (N-1)beta
             for j in range(self.N):
-                #if j == self.N-1:
-                #    self.Ptilde[i,j] = 1-np.sum(self.Ptilde[i,:-1])
-                #    continue
                 self.Ptilde[i,j] = self.transition_proba_tilde_Hybla(i,j)
         # Then recover P from Ptilde
         for i in range(self.N):
@@ -513,10 +515,10 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
     
     def compute_stationnary_distribution(self):
         # 1. Compute the transition probability Matrix P
-        self.compute_transistion_matrix()
+        self.compute_transition_matrix()
 
         # 2. Solve the system of equation
-        if self.P[0,0]-1<1e-5:
+        if abs(self.P[0,0]-1)<1e-5:
             self.pi = np.array([1]+[0]*(self.N-1))
             return self.pi
 
