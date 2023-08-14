@@ -31,7 +31,7 @@ def replace_indices_with_zeros(v,indices):
 
 
 class CCA_MarkovChain:
-    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
+    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0, Wmax = 200):
         self.N = N # number of states
         self.C = C # Bottleneck bandwidth on the path (MSS/s)
         self.W = C*RTT_real # Maximum window size to avoid congestion. In MSS
@@ -70,8 +70,12 @@ class CCA_MarkovChain:
         # Furthermore, pis L1 norm needs to be equal to 1 
         # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
         # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-        ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
-        self.pi = np.real(vs/vs.sum())[:,0]
+        try:
+            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+            self.pi = np.real(vs/vs.sum())[:,0]
+        except: 
+            print(f"Could not compute eigenvalues. Setting pi to uniform. W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.err_rate}")
+            self.pi = np.ones(self.N)/self.N
         return self.pi
     
     def avg_throughput(self):
@@ -251,7 +255,7 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
             print(f"P had rank {np.linalg.matrix_rank(self.P)}. Reduced P has rank {np.linalg.matrix_rank(reduP)} Zero columns where at indices: {zero_cols}")
             print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
             print(reduP)
-            self.pi = np.ones(self.N)/self.N # This makes it possible to continue the simulation and see on the graph that there was an error
+            # This makes it possible to continue the simulation and see on the graph that there was an error
             return self.pi
         self.pi = replace_indices_with_zeros(redupi,zero_cols)
         # if np.any(self.pi<0):
@@ -260,7 +264,33 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         # if abs(np.sum(self.pi) - 1) > 1e-5:
         #     print(f"Error in computing the stationnary distribution. Sum of the distribution is {np.sum(self.pi)}")
         return self.pi
-        
+
+    # def compute_stationnary_distribution(self):
+    #     # 1. Compute the transition probability Matrix P
+    #     # First the shifted version
+    #     for i in range(self.N): # Actually would only need to compute up to (N-1)beta
+    #         for j in range(self.N):
+    #             self.Ptilde[i,j] = self.transition_proba_tilde_CUBIC(i,j)
+    #     # Then recover P from Ptilde
+    #     for i in range(self.N):
+    #         self.P[i,:] = self.Ptilde[int(i*self.beta),:]
+    #     # 2. Solve the system of equation (16)&(17)
+    #     if abs(self.P[0,0]-1) < 1e-4:
+    #         self.pi = np.array([1]+[0]*(self.N-1))
+    #         return 
+    #     try:
+    #         # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+    #         # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+    #         ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+    #         redupi = np.real(vs/vs.sum())[:,0]
+    #     except:
+    #         # print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the reduced transition matrix are {reduP[-5:,-5:]}")
+    #         print(f"Error in computing the reduced stationnary distribution.")
+    #         self.pi = np.ones(self.N)/self.N # This makes it possible to continue the simulation and see on the graph that there was an error
+    #         return self.pi
+    #     ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+    #     self.pi = np.real(vs/vs.sum())[:,0]
+    #     return 
 
     def compute_tau_and_S(self):
         for i in range(self.N):
@@ -545,7 +575,6 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
             print(f"P had rank {np.linalg.matrix_rank(self.P)}. Reduced P has rank {np.linalg.matrix_rank(reduP)} Zero columns where at indices: {zero_cols}")
             print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
             print(reduP)
-            self.pi = np.ones(self.N)/self.N # This makes it possible to continue the simulation and see on the graph that there was an error
             return self.pi
         self.pi = replace_indices_with_zeros(redupi,zero_cols)
         return self.pi
