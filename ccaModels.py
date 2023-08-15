@@ -11,6 +11,8 @@ import matplotlib.pyplot as plt
 import math
 import scipy
 import logging, sys
+import warnings
+warnings.filterwarnings("error")
 
 def find_zero_columns(P):
     return np.where(~P.any(axis=0))[0]
@@ -134,6 +136,26 @@ class CCA_MarkovChain_CUBIC(CCA_MarkovChain):
         """
         return 0
     
+    def D(self,a,b) -> int:
+        """Number of segments sent within the transition from a (after reduction) to b (upper bounded since we assume cwnd packets are sent every RTT )
+
+        Args:
+            x (_type_): start congestion window size
+            y (_type_): target congestion window size
+
+        Returns:
+            int: number of segments 
+        """
+        if b<=a:
+            return 0
+        T = self.T(a/self.beta,b)/self.RTT_real
+        l = int(np.floor(T))
+        delta = T - l
+        sum = 0
+        for k in range(l):
+            sum += self.w(a/self.beta,k*self.RTT_real)
+        return sum+delta*self.w(a/self.beta,l*self.RTT_real)
+    
 class CCA_MarkovChain_CUBIC_time(CCA_MarkovChain_CUBIC):
     
     def transition_proba(self,i,j): # Probability to transition from i to j
@@ -178,29 +200,9 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
                 if j == i:
                     self.Dmin[i,j] = 0
                     continue
-                self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),1)
+                self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),self.Dmin[i,j-1])
                 self.Dmax[i,j-1] = self.Dmin[i,j]
         return
-
-    def D(self,a,b) -> int:
-        """Number of segments sent within the transition from x (after reduction) to y (upper bounded since we assume cwnd packets are sent every RTT )
-
-        Args:
-            x (_type_): start congestion window size
-            y (_type_): target congestion window size
-
-        Returns:
-            int: number of segments 
-        """
-        if b<=a:
-            return 0
-        T = self.T(a/self.beta,b)/self.RTT_real
-        l = int(np.floor(T))
-        delta = T - l
-        sum = 0
-        for k in range(l):
-            sum += self.w(a/self.beta,k*self.RTT_real)
-        return sum+delta*self.w(a/self.beta,l*self.RTT_real)
 
     def transition_proba_tilde_CUBIC(self,i, j):
         if j<i:
@@ -304,6 +306,37 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
                 L = np.cbrt((1-self.beta)*self.a[i]/self.alpha)
                 self.S[i,j] = self.a[i]*self.tau[i,j] + self.alpha/4*((self.tau[i,j]-L)**4-L**4)
         return
+
+class CCA_MarkovChain_CUBIC_bit(CCA_MarkovChain_CUBIC_packet):
+    def __init__(self, MTU = 1500, *args, **kwargs):
+        self.packet_size = MTU*8 # in bits
+        super(CCA_MarkovChain_CUBIC_bit,self).__init__(*args,**kwargs)
+        self.bit_err = self.packet_err/(MTU*8) # probability that a bit is corrupted
+
+    def compute_distances(self):
+        for i in range(self.N):
+            for j in range(i,self.N):
+                if j == i:
+                    self.Dmin[i,j] = 0
+                    continue
+                try:
+                    self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),self.Dmin[i,j-1])
+                except RuntimeWarning:
+                    print(f"Error in computing Dmin = {self.D(self.a[i],j*self.W/self.N)} times {self.packet_size} at i={i},j={j}")
+                self.Dmax[i,j-1] = self.Dmin[i,j]
+        self.Dmax[:,-1] = self.Dmin[:,-1] # Doesn't matter what we put here, since we never use it
+        self.Dmin *= self.packet_size
+        self.Dmax *= self.packet_size
+        return
+    
+    def transition_proba_tilde_CUBIC(self,i, j):
+        if j<i:
+            return 0
+        nmin = int(self.Dmin[i,j])
+        nmax = int(self.Dmax[i,j])
+        if j == self.N-1:
+            return (1-self.bit_err)**(nmin-1)
+        return (1-self.bit_err)**(nmin-1)-(1-self.bit_err)**(nmax-1)
 
 class CCA_MarkovChain_CUBIC_Poojary():
     def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
@@ -593,3 +626,34 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
                 self.tau[i,j] = np.maximum(self.T(self.a[i],self.a[j]),0) # average time duration for state transition from state i to j
                 self.S[i,j] = self.tau[i,j]*(self.beta*self.a[i]+self.a[j])/2
         return
+    
+class CCA_MarkovChain_Hybla_bit(CCA_MarkovChain_Hybla_packet_new):
+    def __init__(self, MTU = 1500, *args, **kwargs):
+        self.packet_size = MTU*8 # in bits
+        super(CCA_MarkovChain_Hybla_bit,self).__init__(*args,**kwargs)
+        self.bit_err = self.packet_err/(MTU*8) # probability that a bit is corrupted
+
+    def compute_distances(self):
+        for i in range(self.N):
+            for j in range(i,self.N):
+                if j == i:
+                    self.Dmin[i,j] = 0
+                    continue
+                try:
+                    self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),self.Dmin[i,j-1])
+                except RuntimeWarning:
+                    print(f"Error in computing Dmin = {self.D(self.a[i],j*self.W/self.N)} times {self.packet_size} at i={i},j={j}")
+                self.Dmax[i,j-1] = self.Dmin[i,j]
+        self.Dmax[:,-1] = self.Dmin[:,-1] # Doesn't matter what we put here, since we never use it
+        self.Dmin *= self.packet_size
+        self.Dmax *= self.packet_size
+        return
+    
+    def transition_proba_tilde_CUBIC(self,i, j):
+        if j<i:
+            return 0
+        nmin = int(self.Dmin[i,j])
+        nmax = int(self.Dmax[i,j])
+        if j == self.N-1:
+            return (1-self.bit_err)**(nmin-1)
+        return (1-self.bit_err)**(nmin-1)-(1-self.bit_err)**(nmax-1)
