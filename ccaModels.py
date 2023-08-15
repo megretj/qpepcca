@@ -74,7 +74,7 @@ class CCA_MarkovChain:
             ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
             self.pi = np.real(vs/vs.sum())[:,0]
         except: 
-            print(f"Could not compute eigenvalues. Setting pi to uniform. W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.err_rate}")
+            print(f"Could not compute eigenvalues. Setting pi to uniform. Parameters were: W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.err_rate}")
             self.pi = np.ones(self.N)/self.N
         return self.pi
     
@@ -160,8 +160,8 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
     def __init__(self, *args, **kwargs):
         super(CCA_MarkovChain_CUBIC_packet,self).__init__(*args,**kwargs)
         # We need additional variables
-        self.Dmin = np.ones([self.N,self.N]) # Minimum distance Matrix
-        self.Dmax = np.ones([self.N,self.N]) # Maximum distance Matrix
+        self.Dmin = np.zeros([self.N,self.N]) # Minimum distance Matrix
+        self.Dmax = np.zeros([self.N,self.N]) # Maximum distance Matrix
         self.Ptilde = np.zeros((self.N,self.N)) # Shifted transition probabilities
         self.compute_distances()
         
@@ -176,7 +176,7 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         for i in range(self.N):
             for j in range(i,self.N):
                 if j == i:
-                    self.Dmin[i,j] = 1
+                    self.Dmin[i,j] = 0
                     continue
                 self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),1)
                 self.Dmax[i,j-1] = self.Dmin[i,j]
@@ -192,13 +192,15 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         Returns:
             int: number of segments 
         """
+        if b<=a:
+            return 0
         T = self.T(a/self.beta,b)/self.RTT_real
         l = int(np.floor(T))
         delta = T - l
         sum = 0
         for k in range(l):
             sum += self.w(a/self.beta,k*self.RTT_real)
-        return int(np.floor(sum+delta*self.w(a/self.beta,l*self.RTT_real)))
+        return sum+delta*self.w(a/self.beta,l*self.RTT_real)
 
     def transition_proba_tilde_CUBIC(self,i, j):
         if j<i:
@@ -207,10 +209,13 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
         nmax = self.Dmax[i,j]
         #print(f"From {self.a[int(self.beta*i)]} to [{(j-1)*self.W/self.N},{j*self.W/self.N}]")
         #print(nmin,nmax)
-        if j == self.N-1:
-            return (1-self.packet_err)**(nmin-1)
+        # if j == self.N-1:
+        #     return (1-self.packet_err)**(nmin-1)
 
-        return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
+        # return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
+        if j == self.N-1:
+            return np.exp(-self.packet_err*nmin)
+        return np.exp(-self.packet_err*nmin) - np.exp(-self.packet_err*nmax)
     
     def compute_transition_matrix(self):
         # First the shifted version
@@ -517,7 +522,7 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
         for i in range(self.N):
             for j in range(i,self.N):
                 if j == i:
-                    self.Dmin[i,j] = 1
+                    self.Dmin[i,j] = 0
                     continue
                 self.Dmin[i,j] = max(self.D(self.a[i],j*self.W/self.N),1)
                 self.Dmax[i,j-1] = self.Dmin[i,j]
@@ -529,10 +534,13 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
         nmin = self.Dmin[i,j]
         nmax = self.Dmax[i,j]
 
-        if j == self.N -1:
-            return (1-self.packet_err)**(nmin-1)
+        # if j == self.N -1:
+        #     return (1-self.packet_err)**(nmin-1)
 
-        return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
+        # return (1-self.packet_err)**(nmin-1)-(1-self.packet_err)**(nmax-1)
+        if j == self.N-1:
+            return np.exp(-self.packet_err*nmin)
+        return np.exp(-self.packet_err*nmin) - np.exp(-self.packet_err*nmax)
     
     def compute_transition_matrix(self):
         for i in range(self.N): # Actually would only need to compute up to (N-1)beta
@@ -548,35 +556,35 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
         self.compute_transition_matrix()
 
         # 2. Solve the system of equation
-        if abs(self.P[0,0]-1)<1e-5:
+        if abs(self.P[0,0]-1)<1e-5: # First state is absorbing
             self.pi = np.array([1]+[0]*(self.N-1))
+            print(f"First state is absorbing. W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
             return self.pi
 
         cols = np.arange(self.N)
         zero_cols = []
         reduP = self.P.copy()
-        while np.where(~reduP.any(axis=0))[0].size > 0:
-            # To solve the issue with unreachable states, we check if a column is zero
-            # if so, we remove the corresponding row and column and solve the system on the reduced matrix
-            # We need to do this recursively until we have non-zero columns
-            temp_zero_cols = np.where(~reduP.any(axis=0))[0] # find zero columns
-            zero_cols.extend([cols[i] for i in temp_zero_cols]) # add original indices to the list of zero columns
-            reduP = np.delete(reduP,temp_zero_cols,axis=0) # remove zero columns
-            reduP = np.delete(reduP,temp_zero_cols,axis=1) # remove zero rows
-            cols = np.delete(cols,temp_zero_cols,axis=0) # remove indices that correspond to zero columns
+        # while np.where(~reduP.any(axis=0))[0].size > 0:
+        #     # To solve the issue with unreachable states, we check if a column is zero
+        #     # if so, we remove the corresponding row and column and solve the system on the reduced matrix
+        #     # We need to do this recursively until we have non-zero columns
+        #     temp_zero_cols = np.where(~reduP.any(axis=0))[0] # find zero columns
+        #     zero_cols.extend([cols[i] for i in temp_zero_cols]) # add original indices to the list of zero columns
+        #     reduP = np.delete(reduP,temp_zero_cols,axis=0) # remove zero columns
+        #     reduP = np.delete(reduP,temp_zero_cols,axis=1) # remove zero rows
+        #     cols = np.delete(cols,temp_zero_cols,axis=0) # remove indices that correspond to zero columns
         try:
             # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
             # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+            # ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
+            # redupi = np.real(vs/vs.sum())[:,0]
             ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
-            redupi = np.real(vs/vs.sum())[:,0]
+            self.pi = np.real(vs/vs.sum())[:,0]
         except:
             # print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the reduced transition matrix are {reduP[-5:,-5:]}")
-            print(f"Error in computing the reduced stationnary distribution.")
-            print(f"P had rank {np.linalg.matrix_rank(self.P)}. Reduced P has rank {np.linalg.matrix_rank(reduP)} Zero columns where at indices: {zero_cols}")
-            print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
-            print(reduP)
+            print(f"Error in computing the reduced stationnary distribution. With parameters W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
             return self.pi
-        self.pi = replace_indices_with_zeros(redupi,zero_cols)
+        # self.pi = replace_indices_with_zeros(redupi,zero_cols)
         return self.pi
 
     def compute_tau_and_S(self):
