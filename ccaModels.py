@@ -12,31 +12,14 @@ import math
 import scipy
 import logging, sys
 import warnings
+import ccaModelHelper as helper
 warnings.filterwarnings("error")
 
-def find_zero_columns(P):
-    return np.where(~P.any(axis=0))[0]
-
-def remove_indices(P,indices):
-    return np.delete(np.delete(P,indices,axis=1),indices,axis=0)
-
-def replace_indices_with_zeros(v,indices):
-    if len(indices) == 0:
-        return v
-    newV = np.zeros(v.size+len(indices))
-    offset = 0
-    for i in range(len(v)):
-        if i in indices:
-            offset += 1
-        newV[i+offset] = v[i]
-    return newV
-
-
 class CCA_MarkovChain:
-    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0, Wmax = 200):
+    def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
         self.N = N # number of states
-        self.C = C # Bottleneck bandwidth on the path (MSS/s)
-        self.W = C*RTT_real # Maximum window size to avoid congestion. In MSS
+        self.C = C # Bottleneck bandwidth on the path (MTU/s)
+        self.W = C*RTT_real # Maximum window size to avoid congestion. In MTU, so again upper bounding the real maximum window size.
         self.RTT_real = RTT_real # in seconds
         self.packet_err = packet_err # probability that a packet drops (for the packet model)
         self.err_rate = err_rate # error rate (for the time model)
@@ -50,7 +33,7 @@ class CCA_MarkovChain:
         self.ssThroughput = 0 # Steady State average throughput
 
     def update(self):
-        self.W = self.C*self.RTT_real # Maximum window size to avoid congestion. In MSS
+        self.W = self.C*self.RTT_real # Maximum window size to avoid congestion. In MTU
         self.a = (np.arange(self.N)+0.5)*self.W/self.N
         self.pi = np.ones(self.N)/self.N # Stationnary Distribution
         self.P = np.zeros([self.N,self.N]) # Transition Probability Matrix
@@ -58,26 +41,59 @@ class CCA_MarkovChain:
         self.tau = np.zeros([self.N,self.N]) 
         self.ssThroughput = 0 # Steady State average throughput
 
-    def compute_stationnary_distribution(self):
-        # 1. Compute the transition probability Matrix P
+    def compute_transition_matrix(self):
         for i in range(self.N):
             for j in range(self.N):
                 if j == self.N-1:
                     self.P[i,j] = 1-np.sum(self.P[i,:-1])
                 else:
                     self.P[i,j] = self.transition_proba(i,j)
-        # 2. Solve the system of equation (16)&(17) 
-        # piP = pi <=> pi(P-I)=0 <=> (P-I)^T pi = 0 
-        # so pi is a left eigenvector of P, with eigenvalue 1
-        # Furthermore, pis L1 norm needs to be equal to 1 
-        # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-        # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+        return self.P
+    
+    def compute_stationnary_distribution(self):
+        # 1. Compute the transition probability Matrix P
+        self.compute_transition_matrix()
+        # 2. Find the stationnary distribution
+        
+        # TODO: Could potentially check for all absorbing states by looking on the diagonal and set the corresponding values in pi to 1. 
+        if abs(self.P[0,0]-1)<1e-5: # First state is absorbing
+            self.pi = np.array([1]+[0]*(self.N-1))
+            return self.pi
+        cols = np.arange(self.N)
+        zero_cols = []
+        reduP = self.P.copy()
+        while np.where(~reduP.any(axis=0))[0].size > 0:
+            # To solve the issue with unreachable states, we check if a column is zero
+            # if so, we remove the corresponding row and column and solve the system on the reduced matrix
+            # We need to do this recursively until we have non-zero columns
+            temp_zero_cols = np.where(~reduP.any(axis=0))[0] # find zero columns
+            zero_cols.extend([cols[i] for i in temp_zero_cols]) # add original indices to the list of zero columns
+            reduP = np.delete(reduP,temp_zero_cols,axis=0) # remove zero columns
+            reduP = np.delete(reduP,temp_zero_cols,axis=1) # remove zero rows
+            cols = np.delete(cols,temp_zero_cols,axis=0) # remove indices that correspond to zero columns
         try:
-            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
-            self.pi = np.real(vs/vs.sum())[:,0]
-        except: 
-            print(f"Could not compute eigenvalues. Setting pi to uniform. Parameters were: W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.err_rate}")
-            self.pi = np.ones(self.N)/self.N
+            # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
+            # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
+            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
+            redupi = np.real(vs/vs.sum())[:,0]
+        except:
+            # This makes it possible to continue the simulation and see on the graph that there was an error
+            print(f"Error in computing the reduced stationnary distribution.")
+            print(f"P had rank {np.linalg.matrix_rank(self.P)}. Reduced P has rank {np.linalg.matrix_rank(reduP)} Zero columns where at indices: {zero_cols}")
+            print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
+            print(reduP)
+            return self.pi
+        self.pi = helper.replace_indices_with_zeros(redupi,zero_cols)
+        #helper.well_defined_pi(self.pi)
+
+        ### Simpler version that does not take into account the zero columns ###
+        # try:
+        #     ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
+        #     self.pi = np.real(vs/vs.sum())[:,0]
+        # except: 
+        #     print(f"Could not compute eigenvalues. Setting pi to uniform. Parameters were: W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.err_rate}")
+        #     self.pi = np.ones(self.N)/self.N
+        #######################################################################
         return self.pi
     
     def avg_throughput(self):
@@ -229,75 +245,6 @@ class CCA_MarkovChain_CUBIC_packet(CCA_MarkovChain_CUBIC):
             self.P[i,:] = self.Ptilde[int(i*self.beta),:]
         #self.P = self.P.round(3)
         return self.P
-    
-    def compute_stationnary_distribution(self):
-        # 1. Compute the transition probability Matrix P
-        self.compute_transition_matrix()
-
-        # 2. Solve the system of equation
-        if abs(self.P[0,0]-1)<1e-5: # First state is absorbing
-            self.pi = np.array([1]+[0]*(self.N-1))
-            return self.pi
-
-        cols = np.arange(self.N)
-        zero_cols = []
-        reduP = self.P.copy()
-        while np.where(~reduP.any(axis=0))[0].size > 0:
-            # To solve the issue with unreachable states, we check if a column is zero
-            # if so, we remove the corresponding row and column and solve the system on the reduced matrix
-            # We need to do this recursively until we have non-zero columns
-            temp_zero_cols = np.where(~reduP.any(axis=0))[0] # find zero columns
-            zero_cols.extend([cols[i] for i in temp_zero_cols]) # add original indices to the list of zero columns
-            reduP = np.delete(reduP,temp_zero_cols,axis=0) # remove zero columns
-            reduP = np.delete(reduP,temp_zero_cols,axis=1) # remove zero rows
-            cols = np.delete(cols,temp_zero_cols,axis=0) # remove indices that correspond to zero columns
-        try:
-            # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-            # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
-            redupi = np.real(vs/vs.sum())[:,0]
-        except:
-            # print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the reduced transition matrix are {reduP[-5:,-5:]}")
-            print(f"Error in computing the reduced stationnary distribution.")
-            print(f"P had rank {np.linalg.matrix_rank(self.P)}. Reduced P has rank {np.linalg.matrix_rank(reduP)} Zero columns where at indices: {zero_cols}")
-            print(f"W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
-            print(reduP)
-            # This makes it possible to continue the simulation and see on the graph that there was an error
-            return self.pi
-        self.pi = replace_indices_with_zeros(redupi,zero_cols)
-        # if np.any(self.pi<0):
-        #     print(f"Error in computing the stationnary distribution. Negative values in the distribution. reduced pi size is{redupi.size} and is {redupi}")
-        #     sys.exit()
-        # if abs(np.sum(self.pi) - 1) > 1e-5:
-        #     print(f"Error in computing the stationnary distribution. Sum of the distribution is {np.sum(self.pi)}")
-        return self.pi
-
-    # def compute_stationnary_distribution(self):
-    #     # 1. Compute the transition probability Matrix P
-    #     # First the shifted version
-    #     for i in range(self.N): # Actually would only need to compute up to (N-1)beta
-    #         for j in range(self.N):
-    #             self.Ptilde[i,j] = self.transition_proba_tilde_CUBIC(i,j)
-    #     # Then recover P from Ptilde
-    #     for i in range(self.N):
-    #         self.P[i,:] = self.Ptilde[int(i*self.beta),:]
-    #     # 2. Solve the system of equation (16)&(17)
-    #     if abs(self.P[0,0]-1) < 1e-4:
-    #         self.pi = np.array([1]+[0]*(self.N-1))
-    #         return 
-    #     try:
-    #         # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-    #         # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-    #         ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
-    #         redupi = np.real(vs/vs.sum())[:,0]
-    #     except:
-    #         # print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the reduced transition matrix are {reduP[-5:,-5:]}")
-    #         print(f"Error in computing the reduced stationnary distribution.")
-    #         self.pi = np.ones(self.N)/self.N # This makes it possible to continue the simulation and see on the graph that there was an error
-    #         return self.pi
-    #     ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(self.P),k=1,sigma=1)
-    #     self.pi = np.real(vs/vs.sum())[:,0]
-    #     return 
 
     def compute_tau_and_S(self):
         for i in range(self.N):
@@ -341,8 +288,8 @@ class CCA_MarkovChain_CUBIC_bit(CCA_MarkovChain_CUBIC_packet):
 class CCA_MarkovChain_CUBIC_Poojary():
     def __init__(self, N:int = 100, C:float=1000., RTT_real:float=0.025, packet_err:float=0.01, err_rate:float = 1, beta:float = 0.7, alpha:float = 1.0):
         self.N = N # number of states
-        self.C = C # Bottleneck bandwidth on the path (MSS/s)
-        self.W = C*RTT_real # Maximum window size to avoid congestion. In MSS
+        self.C = C # Bottleneck bandwidth on the path (MTU/s)
+        self.W = C*RTT_real # Maximum window size to avoid congestion. In MTU
         self.RTT_real = RTT_real # in seconds
         self.packet_err = packet_err # probability that a packet drops (for the packet model)
         self.beta = beta # window reduction ratio
@@ -414,6 +361,18 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
             _type_: Time, in seconds, it takes to grow from beta*x to y.
         """
         return self.RTT0/self.rho*(y-self.beta*x)
+
+    def D(self,a,b) -> int:
+        """ Number of packets sent between a and b
+
+        Args:
+            a (_type_): initial window size (after the window size reduction)
+            b (_type_): target window size
+
+        Returns:
+            int: number of packets sent between a and b
+        """
+        return (b*b-a*a)/(2*self.rho*self.rho)
 
 class CCA_MarkovChain_Hybla_time(CCA_MarkovChain_Hybla):
     
@@ -535,18 +494,6 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
         self.Ptilde = np.zeros((self.N,self.N))
         self.N_avg = np.zeros((self.N,self.N)) #shifted version of D_avg so that i corresponds to the starting value before the window reduction
         self.compute_distances()
-
-    def D(self,a,b) -> int:
-        """ Number of packets sent between a and b
-
-        Args:
-            a (_type_): initial window size (after the window size reduction)
-            b (_type_): target window size
-
-        Returns:
-            int: number of packets sent between a and b
-        """
-        return (b*b-a*a)/(2*self.rho*self.rho)
     
     def compute_distances(self):
         """Computes the number of packets required to transition from any state a_i to any state a_j.
@@ -583,42 +530,6 @@ class CCA_MarkovChain_Hybla_packet_new(CCA_MarkovChain_Hybla):
         for i in range(self.N):
             self.P[i,:] = self.Ptilde[int(i*self.beta),:]
         return self.P
-    
-    def compute_stationnary_distribution(self):
-        # 1. Compute the transition probability Matrix P
-        self.compute_transition_matrix()
-
-        # 2. Solve the system of equation
-        if abs(self.P[0,0]-1)<1e-5: # First state is absorbing
-            self.pi = np.array([1]+[0]*(self.N-1))
-            print(f"First state is absorbing. W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
-            return self.pi
-
-        cols = np.arange(self.N)
-        zero_cols = []
-        reduP = self.P.copy()
-        # while np.where(~reduP.any(axis=0))[0].size > 0:
-        #     # To solve the issue with unreachable states, we check if a column is zero
-        #     # if so, we remove the corresponding row and column and solve the system on the reduced matrix
-        #     # We need to do this recursively until we have non-zero columns
-        #     temp_zero_cols = np.where(~reduP.any(axis=0))[0] # find zero columns
-        #     zero_cols.extend([cols[i] for i in temp_zero_cols]) # add original indices to the list of zero columns
-        #     reduP = np.delete(reduP,temp_zero_cols,axis=0) # remove zero columns
-        #     reduP = np.delete(reduP,temp_zero_cols,axis=1) # remove zero rows
-        #     cols = np.delete(cols,temp_zero_cols,axis=0) # remove indices that correspond to zero columns
-        try:
-            # w,v = np.linalg.eig(np.transpose(self.P)) # Compute eigenvalues/eigenvectors
-            # self.pi = np.real(v[:,0]/v[:,0].sum()) # Scale such that the values sum to 1
-            # ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
-            # redupi = np.real(vs/vs.sum())[:,0]
-            ws,vs = scipy.sparse.linalg.eigs(A=np.transpose(reduP),k=1,sigma=1)
-            self.pi = np.real(vs/vs.sum())[:,0]
-        except:
-            # print(f"Error in computing the reduced stationnary distribution the last five rows and columns of the reduced transition matrix are {reduP[-5:,-5:]}")
-            print(f"Error in computing the reduced stationnary distribution. With parameters W= {self.W}, C= {self.C}, RTT={self.RTT_real}, packet_err= {self.packet_err}")
-            return self.pi
-        # self.pi = replace_indices_with_zeros(redupi,zero_cols)
-        return self.pi
 
     def compute_tau_and_S(self):
         for i in range(self.N):
@@ -634,6 +545,8 @@ class CCA_MarkovChain_Hybla_bit(CCA_MarkovChain_Hybla_packet_new):
         self.bit_err = self.packet_err/(MTU*8) # probability that a bit is corrupted
 
     def compute_distances(self):
+        """Computes the number of bits required to transition from any state a_i to any state a_j.
+        """
         for i in range(self.N):
             for j in range(i,self.N):
                 if j == i:
