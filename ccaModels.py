@@ -338,7 +338,7 @@ class CCA_MarkovChain_CUBIC_Poojary():
 ######------------------------- HYBLA START ---------------------------######
 
 class CCA_MarkovChain_Hybla(CCA_MarkovChain):
-    def __init__(self, RTT0 = 0.025, *args,**kwargs):
+    def __init__(self, RTT0 = 0.05, *args,**kwargs):
         super(CCA_MarkovChain_Hybla,self).__init__(*args,**kwargs)
         self.RTT0 = RTT0 # target RTT
         self.rho = max(self.RTT_real/self.RTT0,1) # RTT ratio
@@ -360,7 +360,7 @@ class CCA_MarkovChain_Hybla(CCA_MarkovChain):
         Returns:
             _type_: Time, in seconds, it takes to grow from beta*x to y.
         """
-        return self.RTT0/self.rho*(y-self.beta*x)
+        return self.RTT_real*(y-self.beta*x)/(self.rho**2)
 
     def D(self,a,b) -> int:
         """ Number of packets sent between a and b
@@ -562,7 +562,7 @@ class CCA_MarkovChain_Hybla_bit(CCA_MarkovChain_Hybla_packet_new):
         self.Dmax *= self.packet_size
         return
     
-    def transition_proba_tilde_CUBIC(self,i, j):
+    def transition_proba_tilde_Hybla(self,i, j):
         if j<i:
             return 0
         nmin = int(self.Dmin[i,j])
