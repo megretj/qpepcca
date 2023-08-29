@@ -7,6 +7,7 @@ class ISP_Compound():
         self.segments = segments
         self.goodputRatio = goodputRatio
         self.min_throughput = -1
+        self.min_goodput = -1
         self.bottleNeck = ""
         
     def __str__(self):
@@ -25,12 +26,12 @@ class ISP_Compound():
                 self.bottleNeck = segmentName
         return self.min_throughput
     
-    def goodput(self):
+    def compute_goodput(self):
         #Here I assume that the bottleneck is the satellite link
         if self.min_throughput == -1:
             self.compute_throughput()
-        
-        return self.min_throughput*self.goodputRatio
+        self.min_goodput = self.min_throughput*self.goodputRatio
+        return self.min_goodput
     
     def time_to_transfer(self,filesize=100, goodput = True):
         # Still need to add qpep delay
